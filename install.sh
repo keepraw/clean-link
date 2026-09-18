@@ -248,6 +248,10 @@ fi
 run_root mv "$ENV_TEMP" "$STAGING_DIR/.env"
 ENV_TEMP=""
 run_root chown -R root:root "$STAGING_DIR"
+# mktemp creates the staging directory with mode 0700.  That mode is kept
+# when the directory is renamed to INSTALL_DIR, so the unprivileged service
+# account would otherwise fail to enter WorkingDirectory with status 200/CHDIR.
+run_root chmod 0755 "$STAGING_DIR"
 run_root chown root:"$SERVICE_NAME" "$STAGING_DIR/.env"
 run_root chmod 640 "$STAGING_DIR/.env"
 run_root chmod 755 "$STAGING_DIR/install.sh" "$STAGING_DIR/update.sh"
