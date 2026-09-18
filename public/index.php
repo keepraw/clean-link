@@ -4,30 +4,20 @@ declare(strict_types=1);
 
 use CleanLink\AppError;
 use CleanLink\Auth;
+use CleanLink\LoginRateLimiter;
 use CleanLink\NetSafety;
 use CleanLink\Resolver;
 use CleanLink\Sanitizer;
 
 require_once dirname(__DIR__) . '/app/AppError.php';
 require_once dirname(__DIR__) . '/app/Auth.php';
+require_once dirname(__DIR__) . '/app/LoginRateLimiter.php';
 require_once dirname(__DIR__) . '/app/NetSafety.php';
 require_once dirname(__DIR__) . '/app/Resolver.php';
 require_once dirname(__DIR__) . '/app/Sanitizer.php';
 
 $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
-
-if (
-    PHP_SAPI === 'cli-server'
-    && $requestMethod === 'GET'
-    && in_array($requestPath, ['/index.html', '/styles.css', '/app.js', '/favicon.svg'], true)
-) {
-    return false;
-}
-if ($requestMethod === 'GET' && $requestPath === '/') {
-    readfile(__DIR__ . '/index.html');
-    exit;
-}
 
 function securityHeaders(): void
 {
@@ -36,6 +26,22 @@ function securityHeaders(): void
     header('X-Content-Type-Options: nosniff');
     header('X-Frame-Options: DENY');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+    header('Cross-Origin-Opener-Policy: same-origin');
+    header('Cross-Origin-Resource-Policy: same-origin');
+    if (requestIsSecure()) {
+        header('Strict-Transport-Security: max-age=31536000');
+    }
+}
+
+/** @param array<string, array{0: string, 1: string}> $files */
+function serveStaticFile(string $path, array $files): void
+{
+    if (!isset($files[$path])) return;
+    securityHeaders();
+    header('Cache-Control: no-cache');
+    header('Content-Type: ' . $files[$path][1]);
+    readfile(__DIR__ . '/' . $files[$path][0]);
+    exit;
 }
 
 /** @param array<string, mixed> $body */
@@ -76,28 +82,89 @@ function requestIsSecure(): bool
         || strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
 }
 
-$password = getenv('APP_PASSWORD') ?: '';
-if ($password === '') {
-    error_log('APP_PASSWORD is required.');
+function clientAddress(): string
+{
+    $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    if (in_array($remote, ['127.0.0.1', '::1'], true)) {
+        $forwarded = explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0];
+        $forwarded = trim($forwarded);
+        if (filter_var($forwarded, FILTER_VALIDATE_IP) !== false) {
+            return $forwarded;
+        }
+    }
+    return $remote;
+}
+
+$staticFiles = [
+    '/index.html' => ['index.html', 'text/html; charset=utf-8'],
+    '/styles.css' => ['styles.css', 'text/css; charset=utf-8'],
+    '/app.js' => ['app.js', 'application/javascript; charset=utf-8'],
+    '/favicon.svg' => ['favicon.svg', 'image/svg+xml'],
+];
+if ($requestMethod === 'GET') {
+    serveStaticFile($requestPath, $staticFiles);
+    if ($requestPath === '/') {
+        securityHeaders();
+        header('Cache-Control: no-store');
+        header('Content-Type: text/html; charset=utf-8');
+        readfile(__DIR__ . '/index.html');
+        exit;
+    }
+}
+
+$passwordHash = getenv('APP_PASSWORD_HASH') ?: '';
+$secret = getenv('SESSION_SECRET') ?: '';
+$sessionSecondsValue = getenv('SESSION_SECONDS') ?: '86400';
+if ($passwordHash === '' || $secret === '') {
+    error_log('APP_PASSWORD_HASH and SESSION_SECRET are required.');
     jsonResponse(503, ['error' => 'NOT_CONFIGURED', 'message' => 'Application is not configured.']);
 }
-$secret = getenv('SESSION_SECRET') ?: hash('sha256', 'clean-link:' . $password);
-$auth = new Auth($password, $secret);
+$passwordInfo = password_get_info($passwordHash);
+if (empty($passwordInfo['algo'])) {
+    jsonResponse(503, ['error' => 'NOT_CONFIGURED', 'message' => 'Application is not configured.']);
+}
+if (!ctype_digit($sessionSecondsValue)) {
+    jsonResponse(503, ['error' => 'NOT_CONFIGURED', 'message' => 'Application is not configured.']);
+}
+$sessionSeconds = (int) $sessionSecondsValue;
+if ($sessionSeconds < 300 || $sessionSeconds > 2592000) {
+    jsonResponse(503, ['error' => 'NOT_CONFIGURED', 'message' => 'Application is not configured.']);
+}
+$auth = new Auth($passwordHash, $secret, $sessionSeconds);
+$rateLimitPath = getenv('RATE_LIMIT_FILE') ?: sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'clean-link-login-attempts.json';
+$rateLimiter = new LoginRateLimiter($rateLimitPath, $secret);
 $method = $requestMethod;
 $path = $requestPath;
 
 try {
     if ($method === 'GET' && $path === '/health') {
+        $rateLimitDirectory = dirname($rateLimitPath);
+        if (
+            !is_dir($rateLimitDirectory)
+            || !is_writable($rateLimitDirectory)
+            || (file_exists($rateLimitPath) && !is_writable($rateLimitPath))
+        ) {
+            throw new AppError('NOT_CONFIGURED', 'Application storage is not writable.', 503);
+        }
         jsonResponse(200, ['status' => 'ok']);
     }
     if ($method === 'GET' && $path === '/api/session') {
         jsonResponse(200, ['authenticated' => $auth->isAuthenticated()]);
     }
     if ($method === 'POST' && $path === '/api/login') {
+        $client = clientAddress();
+        $retryAfter = $rateLimiter->retryAfter($client);
+        if ($retryAfter > 0) {
+            header('Retry-After: ' . $retryAfter);
+            throw new AppError('RATE_LIMITED', 'Too many login attempts. Try again later.', 429);
+        }
         $body = jsonBody();
         if (!$auth->passwordMatches($body['password'] ?? null)) {
+            $retryAfter = $rateLimiter->recordFailure($client);
+            if ($retryAfter > 0) header('Retry-After: ' . $retryAfter);
             throw new AppError('INVALID_PASSWORD', 'Incorrect password.', 401);
         }
+        $rateLimiter->clearClient($client);
         $auth->setSessionCookie(requestIsSecure());
         jsonResponse(200, ['authenticated' => true]);
     }

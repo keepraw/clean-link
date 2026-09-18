@@ -7,28 +7,31 @@ namespace CleanLink;
 final class Auth
 {
     public const COOKIE_NAME = 'clean_link_session';
-    private const SESSION_SECONDS = 604800;
 
     /** @var string */
-    private $password;
+    private $passwordHash;
 
     /** @var string */
     private $secret;
 
-    public function __construct(string $password, string $secret)
+    /** @var int */
+    private $sessionSeconds;
+
+    public function __construct(string $passwordHash, string $secret, int $sessionSeconds = 86400)
     {
-        $this->password = $password;
+        $this->passwordHash = $passwordHash;
         $this->secret = $secret;
+        $this->sessionSeconds = $sessionSeconds;
     }
 
     public function passwordMatches($candidate): bool
     {
-        return is_string($candidate) && hash_equals($this->password, $candidate);
+        return is_string($candidate) && password_verify($candidate, $this->passwordHash);
     }
 
     public function createToken(?int $now = null): string
     {
-        $expires = (string) (($now ?? time()) + self::SESSION_SECONDS);
+        $expires = (string) (($now ?? time()) + $this->sessionSeconds);
         return $expires . '.' . $this->sign($expires);
     }
 
@@ -50,7 +53,7 @@ final class Auth
     public function setSessionCookie(bool $secure): void
     {
         $cookie = self::COOKIE_NAME . '=' . $this->createToken()
-            . '; Path=/; Max-Age=' . self::SESSION_SECONDS
+            . '; Path=/; Max-Age=' . $this->sessionSeconds
             . '; HttpOnly; SameSite=Strict'
             . ($secure ? '; Secure' : '');
         header('Set-Cookie: ' . $cookie, false);

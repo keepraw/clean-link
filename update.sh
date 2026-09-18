@@ -4,11 +4,13 @@ set -Eeuo pipefail
 INSTALL_DIR="/opt/clean-link"
 SERVICE_NAME="clean-link"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+DATA_DIR="/var/lib/clean-link"
 REPO_BRANCH="${CLEAN_LINK_BRANCH:-main}"
 ARCHIVE_URL="${CLEAN_LINK_ARCHIVE_URL:-https://github.com/keepraw/clean-link/archive/refs/heads/${REPO_BRANCH}.tar.gz}"
 STAGING_DIR=""
 BACKUP_DIR=""
 SWAPPED="false"
+SERVICE_BACKUP=""
 
 say() { printf '%s\n' "$*"; }
 fail() { say "ERROR: $*" >&2; exit 1; }
@@ -31,11 +33,18 @@ cleanup() {
             run_root systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
             if [ -d "$INSTALL_DIR" ]; then run_root rm -rf -- "$INSTALL_DIR"; fi
             run_root mv "$BACKUP_DIR" "$INSTALL_DIR"
+            if [ -n "$SERVICE_BACKUP" ] && [ -f "$SERVICE_BACKUP" ]; then
+                run_root cp "$SERVICE_BACKUP" "$SERVICE_FILE"
+                run_root systemctl daemon-reload >/dev/null 2>&1 || true
+            fi
             run_root systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
             say "The previous version was restored." >&2
         fi
         if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
             run_root rm -rf -- "$STAGING_DIR"
+        fi
+        if [ -n "$SERVICE_BACKUP" ] && [ -f "$SERVICE_BACKUP" ]; then
+            rm -f -- "$SERVICE_BACKUP"
         fi
     fi
 }
@@ -45,11 +54,18 @@ trap cleanup EXIT
 [ -f "$SERVICE_FILE" ] || fail "The Clean Link systemd service is missing."
 command -v curl >/dev/null 2>&1 || fail "curl is required."
 command -v tar >/dev/null 2>&1 || fail "tar is required."
+php_bin="$(command -v php || true)"
+[ -n "$php_bin" ] || fail "php is required."
 
 STAGING_DIR="$(run_root mktemp -d "${INSTALL_DIR}.update.XXXXXX")"
 say "Downloading the latest Clean Link version..."
 run_root bash -c 'set -o pipefail; curl -fsSL "$1" | tar -xz --strip-components=1 -C "$2"' bash "$ARCHIVE_URL" "$STAGING_DIR"
 run_root cp "$INSTALL_DIR/.env" "$STAGING_DIR/.env"
+run_root "$php_bin" "$STAGING_DIR/scripts/migrate-env.php" "$STAGING_DIR/.env"
+say "Validating the update..."
+run_root find "$STAGING_DIR/app" "$STAGING_DIR/public" "$STAGING_DIR/tests" "$STAGING_DIR/scripts" \
+    -type f -name '*.php' -exec "$php_bin" -l '{}' ';' >/dev/null
+run_root "$php_bin" "$STAGING_DIR/tests/run.php"
 run_root chown -R root:root "$STAGING_DIR"
 # mktemp creates the staging directory with mode 0700. The service runs as the
 # unprivileged clean-link user, so it must be able to enter the directory after
@@ -72,12 +88,24 @@ app_domain="${app_domain#\'}"; app_domain="${app_domain%\'}"
 app_domain="${app_domain#\"}"; app_domain="${app_domain%\"}"
 
 say "Applying the update..."
+SERVICE_BACKUP="$(mktemp)"
+run_root cp "$SERVICE_FILE" "$SERVICE_BACKUP"
 run_root systemctl stop "$SERVICE_NAME"
 BACKUP_DIR="${INSTALL_DIR}.backup.$(date +%s)"
 run_root mv "$INSTALL_DIR" "$BACKUP_DIR"
 SWAPPED="true"
 run_root mv "$STAGING_DIR" "$INSTALL_DIR"
 STAGING_DIR=""
+run_root install -d -o "$SERVICE_NAME" -g "$SERVICE_NAME" -m 0700 "$DATA_DIR"
+run_root sed -i 's/-S 0\.0\.0\.0:/-S 127.0.0.1:/' "$SERVICE_FILE"
+run_root grep -q -- '-S 127\.0\.0\.1:' "$SERVICE_FILE" \
+    || fail "Unable to restrict the service listener to 127.0.0.1."
+if ! run_root grep -q '^ReadWritePaths=/var/lib/clean-link$' "$SERVICE_FILE"; then
+    run_root sed -i '/^ProtectSystem=strict$/a ReadWritePaths=/var/lib/clean-link' "$SERVICE_FILE"
+fi
+run_root grep -q '^ReadWritePaths=/var/lib/clean-link$' "$SERVICE_FILE" \
+    || fail "Unable to grant the service access to its rate-limit state directory."
+run_root systemctl daemon-reload
 run_root systemctl start "$SERVICE_NAME"
 
 healthy="false"
@@ -93,15 +121,23 @@ if [ "$healthy" != "true" ]; then
     run_root journalctl -u "$SERVICE_NAME" -n 60 --no-pager >&2 || true
     fail "The updated service failed its health check."
 fi
+response_headers="$(curl -fsS -D - -o /dev/null "http://127.0.0.1:${app_port}/")"
+printf '%s\n' "$response_headers" | grep -qi '^Content-Security-Policy:' \
+    || fail "The updated service did not apply Content-Security-Policy to the main page."
+printf '%s\n' "$response_headers" | grep -qi '^X-Frame-Options: DENY' \
+    || fail "The updated service did not apply frame protection to the main page."
 
 run_root rm -rf -- "$BACKUP_DIR"
 BACKUP_DIR=""
 SWAPPED="false"
+rm -f -- "$SERVICE_BACKUP"
+SERVICE_BACKUP=""
 
 say "Clean Link updated successfully."
 say "Configuration preserved: $INSTALL_DIR/.env"
 if [ -n "$app_domain" ]; then
     say "URL: https://${app_domain}"
 else
-    say "URL: http://SERVER_IP:${app_port}"
+    say "URL: http://127.0.0.1:${app_port} (localhost only)"
+    say "SSH tunnel: ssh -L ${app_port}:127.0.0.1:${app_port} USER@SERVER_IP"
 fi

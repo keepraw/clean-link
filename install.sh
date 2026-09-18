@@ -8,6 +8,7 @@ CADDY_FILE="/etc/caddy/Caddyfile"
 REPO_BRANCH="${CLEAN_LINK_BRANCH:-main}"
 ARCHIVE_URL="${CLEAN_LINK_ARCHIVE_URL:-https://github.com/keepraw/clean-link/archive/refs/heads/${REPO_BRANCH}.tar.gz}"
 DEFAULT_PORT="3000"
+DATA_DIR="/var/lib/clean-link"
 STAGING_DIR=""
 NEW_INSTALL="false"
 UNIT_CREATED="false"
@@ -112,14 +113,24 @@ else
     while true; do
         IFS= read -r -s -p "Choose an app password: " app_password </dev/tty
         printf '\n' >/dev/tty
-        [ ${#app_password} -ge 8 ] && break
-        say "Password must contain at least 8 characters." >/dev/tty
+        [ ${#app_password} -ge 20 ] && break
+        say "Password must contain at least 20 characters." >/dev/tty
     done
 fi
+if [ ${#app_password} -lt 20 ]; then
+    fail "The password must contain at least 20 characters."
+fi
 case "$app_password" in
-    *"'"*) fail "The password cannot contain a single quote. Choose a different password." ;;
     *$'\n'*|*$'\r'*) fail "The password cannot contain a line break." ;;
 esac
+password_hash="$(printf '%s' "$app_password" | "$php_bin" -r '
+    $password = stream_get_contents(STDIN);
+    $hash = password_hash($password, PASSWORD_DEFAULT);
+    if (!is_string($hash)) exit(1);
+    echo $hash;
+')" || fail "The password could not be hashed."
+[ -n "$password_hash" ] || fail "The password could not be hashed."
+unset app_password
 
 if [ -n "${APP_PORT:-}" ]; then
     app_port="$APP_PORT"
@@ -143,7 +154,7 @@ if [ -n "${APP_DOMAIN:-}" ]; then
     app_domain="$APP_DOMAIN"
     domain_from_env="true"
 elif [ -r /dev/tty ]; then
-    IFS= read -r -p "Domain for automatic HTTPS (press Enter to use IP and port): " app_domain </dev/tty
+    IFS= read -r -p "Domain for public HTTPS (press Enter for localhost-only access): " app_domain </dev/tty
 else
     app_domain=""
 fi
@@ -191,17 +202,16 @@ if [ -n "$app_domain" ]; then
     say "Installing Caddy for automatic Let's Encrypt HTTPS..."
     CADDY_INSTALLED="true"
     run_root apt-get install -y caddy || fail "Caddy could not be installed or started. Check package sources and make sure ports 80/443 are free."
-    listen_host="127.0.0.1"
-else
-    listen_host="0.0.0.0"
 fi
+listen_host="127.0.0.1"
 
 session_secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
 ENV_TEMP="$(mktemp)"
 UNIT_TEMP="$(mktemp)"
 chmod 600 "$ENV_TEMP"
-printf "APP_PASSWORD='%s'\nSESSION_SECRET='%s'\nAPP_PORT=%s\nAPP_DOMAIN='%s'\nCOOKIE_SECURE=auto\n" \
-    "$app_password" "$session_secret" "$app_port" "$app_domain" >"$ENV_TEMP"
+printf "APP_PASSWORD_HASH='%s'\nSESSION_SECRET='%s'\nAPP_PORT=%s\nAPP_DOMAIN='%s'\nSESSION_SECONDS=86400\nRATE_LIMIT_FILE=%s/login-attempts.json\nCOOKIE_SECURE=auto\n" \
+    "$password_hash" "$session_secret" "$app_port" "$app_domain" "$DATA_DIR" >"$ENV_TEMP"
+unset password_hash
 
 cat >"$UNIT_TEMP" <<EOF
 [Unit]
@@ -221,6 +231,7 @@ RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
+ReadWritePaths=$DATA_DIR
 ProtectHome=true
 PrivateDevices=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
@@ -239,11 +250,27 @@ if [ -n "$app_domain" ]; then
 }
 
 $app_domain {
+    header {
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        Referrer-Policy "no-referrer"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Resource-Policy "same-origin"
+        Strict-Transport-Security "max-age=31536000"
+        -Server
+    }
     reverse_proxy 127.0.0.1:$app_port
 }
 EOF
     run_root caddy validate --config "$CADDY_TEMP" --adapter caddyfile
 fi
+
+say "Validating the application..."
+run_root find "$STAGING_DIR/app" "$STAGING_DIR/public" "$STAGING_DIR/tests" "$STAGING_DIR/scripts" \
+    -type f -name '*.php' -exec "$php_bin" -l '{}' ';' >/dev/null
+run_root "$php_bin" "$STAGING_DIR/tests/run.php"
 
 run_root mv "$ENV_TEMP" "$STAGING_DIR/.env"
 ENV_TEMP=""
@@ -255,6 +282,7 @@ run_root chmod 0755 "$STAGING_DIR"
 run_root chown root:"$SERVICE_NAME" "$STAGING_DIR/.env"
 run_root chmod 640 "$STAGING_DIR/.env"
 run_root chmod 755 "$STAGING_DIR/install.sh" "$STAGING_DIR/update.sh"
+run_root install -d -o "$SERVICE_NAME" -g "$SERVICE_NAME" -m 0700 "$DATA_DIR"
 run_root mv "$STAGING_DIR" "$INSTALL_DIR"
 STAGING_DIR=""
 NEW_INSTALL="true"
@@ -292,13 +320,15 @@ if [ "$healthy" != "true" ]; then
     run_root journalctl -u "$SERVICE_NAME" -n 60 --no-pager >&2 || true
     fail "Clean Link did not become healthy. Check whether port $app_port is already in use."
 fi
+response_headers="$(curl -fsS -D - -o /dev/null "http://127.0.0.1:${app_port}/")"
+printf '%s\n' "$response_headers" | grep -qi '^Content-Security-Policy:' \
+    || fail "Clean Link did not apply Content-Security-Policy to the main page."
+printf '%s\n' "$response_headers" | grep -qi '^X-Frame-Options: DENY' \
+    || fail "Clean Link did not apply frame protection to the main page."
 
 NEW_INSTALL="false"
 UNIT_CREATED="false"
 USER_CREATED="false"
-server_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-server_ip="${server_ip:-SERVER_IP}"
-
 if [ -n "$app_domain" ]; then
     https_ready="false"
     for _ in $(seq 1 45); do
@@ -314,12 +344,16 @@ if [ -n "$app_domain" ]; then
     fi
     public_url="https://${app_domain}"
 else
-    public_url="http://${server_ip}:${app_port}"
+    public_url="http://127.0.0.1:${app_port} (localhost only)"
 fi
 
 say ""
 say "Clean Link installed successfully."
 say "URL: $public_url"
+if [ -z "$app_domain" ]; then
+    say "SSH tunnel: ssh -L ${app_port}:127.0.0.1:${app_port} USER@SERVER_IP"
+    say "Then open http://127.0.0.1:${app_port} on your computer."
+fi
 say "Install directory: $INSTALL_DIR"
 say "Service status: active"
 say "Update: $INSTALL_DIR/update.sh"
