@@ -51,6 +51,10 @@ say "Downloading the latest Clean Link version..."
 run_root bash -c 'set -o pipefail; curl -fsSL "$1" | tar -xz --strip-components=1 -C "$2"' bash "$ARCHIVE_URL" "$STAGING_DIR"
 run_root cp "$INSTALL_DIR/.env" "$STAGING_DIR/.env"
 run_root chown -R root:root "$STAGING_DIR"
+# mktemp creates the staging directory with mode 0700. The service runs as the
+# unprivileged clean-link user, so it must be able to enter the directory after
+# it is renamed to INSTALL_DIR.
+run_root chmod 0755 "$STAGING_DIR"
 run_root chown root:"$SERVICE_NAME" "$STAGING_DIR/.env"
 run_root chmod 640 "$STAGING_DIR/.env"
 run_root chmod 755 "$STAGING_DIR/install.sh" "$STAGING_DIR/update.sh"
@@ -85,7 +89,10 @@ for _ in $(seq 1 30); do
     if ! run_root systemctl is-active --quiet "$SERVICE_NAME"; then break; fi
     sleep 1
 done
-[ "$healthy" = "true" ] || fail "The updated service failed its health check."
+if [ "$healthy" != "true" ]; then
+    run_root journalctl -u "$SERVICE_NAME" -n 60 --no-pager >&2 || true
+    fail "The updated service failed its health check."
+fi
 
 run_root rm -rf -- "$BACKUP_DIR"
 BACKUP_DIR=""
