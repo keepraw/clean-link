@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Resolve redirects and remove affiliate and tracking parameters from product links." />
+    <meta name="color-scheme" content="light dark" />
+    <title>Clean Link</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Clean Link home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M9.5 14.5l5-5M7.2 17.8l-1 1a3.5 3.5 0 01-5-5l3.2-3.2a3.5 3.5 0 014.9 0M16.8 6.2l1-1a3.5 3.5 0 015 5l-3.2 3.2a3.5 3.5 0 01-4.9 0"/></svg>
+          </span>
+          <span>Clean Link</span>
+        </a>
+        <button id="logout-button" class="text-button hidden" type="button">Lock</button>
+      </header>
+
+      <main>
+        <section id="login-view" class="auth-panel" aria-labelledby="login-title">
+          <div class="eyebrow">Private utility</div>
+          <h1 id="login-title">Unlock Clean Link</h1>
+          <p>Enter your password to continue.</p>
+          <form id="login-form" novalidate>
+            <label for="password">Password</label>
+            <div class="input-row">
+              <input id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+              <button class="primary-button" type="submit">Unlock</button>
+            </div>
+            <p id="login-error" class="error-message" role="alert" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section id="app-view" class="workspace hidden" aria-labelledby="app-title">
+          <div class="intro">
+            <div class="eyebrow">Redirect resolver + URL sanitizer</div>
+            <h1 id="app-title">Clean Link</h1>
+            <p>Remove affiliate and tracking parameters from redirect links.</p>
+          </div>
+
+          <form id="clean-form" class="cleaner-card" novalidate>
+            <label for="url-input">Paste a product link</label>
+            <div class="url-control">
+              <input id="url-input" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/redirect?..." required />
+              <button id="clean-button" class="primary-button" type="submit">
+                <span class="button-label">Clean Link</span>
+                <span class="button-spinner" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="form-meta">
+              <span>Up to 10 redirects</span>
+              <span>Nothing is saved</span>
+            </div>
+            <p id="clean-error" class="error-message" role="alert" aria-live="polite"></p>
+          </form>
+
+          <section id="result-panel" class="result-panel hidden" aria-labelledby="result-title">
+            <div class="result-heading">
+              <div>
+                <div class="eyebrow success">Ready</div>
+                <h2 id="result-title">Clean URL</h2>
+              </div>
+              <span id="redirect-count" class="hop-badge"></span>
+            </div>
+
+            <div class="clean-result">
+              <a id="clean-url" href="#" target="_blank" rel="noopener noreferrer"></a>
+              <div class="result-actions">
+                <button id="copy-button" class="secondary-button" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h11v11H8zM5 16H4V5h11v1"/></svg>
+                  <span>Copy</span>
+                </button>
+                <a id="open-button" class="secondary-button" href="#" target="_blank" rel="noopener noreferrer">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M18 13v6H5V6h6"/></svg>
+                  Open
+                </a>
+              </div>
+            </div>
+
+            <details class="link-details">
+              <summary>View resolution details</summary>
+              <dl>
+                <div>
+                  <dt>Original</dt>
+                  <dd id="original-url"></dd>
+                </div>
+                <div>
+                  <dt>Resolved</dt>
+                  <dd id="final-url"></dd>
+                </div>
+              </dl>
+            </details>
+          </section>
+        </section>
+      </main>
+
+      <footer>
+        <span class="privacy-dot" aria-hidden="true"></span>
+        Links are processed in memory and never stored.
+      </footer>
+    </div>
+  </body>
+</html>
