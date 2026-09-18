@@ -14,11 +14,21 @@ final class NetSafety
     /** @return array{scheme: string, host: string, port: int, url: string} */
     public function validateUrl(string $input): array
     {
-        if (strlen($input) > 8192 || filter_var($input, FILTER_VALIDATE_URL) === false) {
+        if (strlen($input) > 8192) {
             throw new AppError('INVALID_URL', 'Invalid URL.');
         }
 
-        $parts = parse_url($input);
+        // Query-string decoding can turn an encoded UTF-8 path such as
+        // Pok%C3%A9mon into literal Unicode. Encode only non-ASCII bytes again;
+        // whitespace and control characters remain invalid.
+        $asciiInput = preg_replace_callback('/[\x80-\xFF]/', static function (array $match): string {
+            return rawurlencode($match[0]);
+        }, $input);
+        if ($asciiInput === null || filter_var($asciiInput, FILTER_VALIDATE_URL) === false) {
+            throw new AppError('INVALID_URL', 'Invalid URL.');
+        }
+
+        $parts = parse_url($asciiInput);
         $scheme = strtolower((string) ($parts['scheme'] ?? ''));
         $host = trim(strtolower(rtrim((string) ($parts['host'] ?? ''), '.')), '[]');
 

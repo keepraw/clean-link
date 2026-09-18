@@ -29,6 +29,7 @@ final class Resolver
     {
         $current = $input;
         $hops = [];
+        $unwrappedEmbeddedDestination = false;
 
         for ($redirects = 0; ; $redirects++) {
             $target = $this->netSafety->validateUrl($current);
@@ -40,7 +41,16 @@ final class Resolver
                     throw new AppError('REDIRECT_LIMIT', 'Redirect limit exceeded.', 508);
                 }
                 $current = $embeddedDestination;
+                $unwrappedEmbeddedDestination = true;
                 continue;
+            }
+
+            // A destination carried by a known redirector is already explicit.
+            // Validate it, but do not require the merchant to accept a request
+            // from this server just to return the clean destination URL.
+            if ($unwrappedEmbeddedDestination) {
+                $hops[] = ['url' => $target['url'], 'status' => 0];
+                return ['finalUrl' => $target['url'], 'hops' => $hops];
             }
 
             $address = $this->netSafety->resolvePublicAddress($target['host']);
@@ -66,6 +76,25 @@ final class Resolver
         }
 
         $host = strtolower(rtrim((string) $parts['host'], '.'));
+
+        if (
+            in_array($host, ['samsclub.com', 'www.samsclub.com'], true)
+            && ($parts['path'] ?? '') === '/are-you-human'
+        ) {
+            parse_str((string) $parts['query'], $query);
+            $encodedPath = $query['url'] ?? null;
+            if (!is_string($encodedPath) || $encodedPath === '') {
+                return null;
+            }
+
+            $decodedPath = base64_decode(str_replace(' ', '+', $encodedPath), true);
+            if (!is_string($decodedPath) || strpos($decodedPath, '/') !== 0 || strpos($decodedPath, '//') === 0) {
+                return null;
+            }
+
+            return strtolower((string) ($parts['scheme'] ?? 'https')) . '://' . $host . $decodedPath;
+        }
+
         $parameter = self::EMBEDDED_DESTINATION_PARAMETERS[$host] ?? null;
         if ($parameter === null) {
             return null;

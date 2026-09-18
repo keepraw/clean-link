@@ -80,6 +80,11 @@ expectSame(
     $net->validateUrl('https://EXAMPLE.com./path')['url'],
     'Hostnames are normalized before pinned requests'
 );
+expectSame(
+    'https://example.com/Pok%C3%A9mon',
+    $net->validateUrl('https://example.com/Pokémon')['url'],
+    'Unicode URL paths are normalized to percent encoding'
+);
 
 $resolver = new Resolver($net);
 expectSame(
@@ -101,6 +106,38 @@ expectSame(
     null,
     $resolver->embeddedDestination('https://example.com/?url=https%3A%2F%2Fwww.amazon.com%2Fdp%2FB0HF1CV5X4'),
     'Destination parameters on unknown hosts are not trusted'
+);
+
+$bestBuyUrl = 'https://www.bestbuy.com/product/playstation-5-digital-edition-marvels-wolverine-battle-limited-edition-bundle/JXHQ37ZQRV/sku/6689676';
+$bestBuyResult = $resolver->resolveWithHttp(
+    'https://redirect.fatcoupon.com/go?referrer=abc&url=' . rawurlencode($bestBuyUrl)
+);
+expectSame(
+    $bestBuyUrl,
+    $bestBuyResult['finalUrl'],
+    'Known embedded destinations do not require a merchant HTTP request'
+);
+expectSame(
+    1,
+    count($bestBuyResult['hops']) - 1,
+    'Embedded destination transitions count as redirects'
+);
+
+$samsClubUrl = 'https://www.samsclub.com/ip/Sony-PlayStation-5-Console-Slim-Digital-Marvel-s-Wolverine-Battle-Yellow-Limited-Edition-Bundle-825GB/20856500647?classType=REGULAR&from=/search';
+expectSame(
+    $samsClubUrl,
+    $resolver->embeddedDestination('https://www.samsclub.com/are-you-human?url=' . rawurlencode(base64_encode(parse_url($samsClubUrl, PHP_URL_PATH) . '?' . parse_url($samsClubUrl, PHP_URL_QUERY))) . '&uuid=test'),
+    'Sam\'s Club bot-check URLs restore the original same-origin path'
+);
+
+$unicodeAmazonUrl = 'https://www.amazon.com/Pok%C3%A9mon-TCG-Celebration-Elite-Trainer/dp/B0H78BB9TY?tag=amazonproducthunt-20';
+$unicodeAmazonResult = $resolver->resolveWithHttp(
+    'https://redirect.fatcoupon.com/go?referrer=abc&url=' . rawurlencode($unicodeAmazonUrl)
+);
+expectSame(
+    'https://www.amazon.com/dp/B0H78BB9TY',
+    $sanitizer->sanitize($unicodeAmazonResult['finalUrl']),
+    'Encoded Unicode Amazon product URLs unwrap and canonicalize'
 );
 
 echo "All {$assertions} assertions passed.\n";
