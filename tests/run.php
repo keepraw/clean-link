@@ -5,11 +5,13 @@ declare(strict_types=1);
 use CleanLink\AppError;
 use CleanLink\Auth;
 use CleanLink\NetSafety;
+use CleanLink\Resolver;
 use CleanLink\Sanitizer;
 
 require_once __DIR__ . '/../app/AppError.php';
 require_once __DIR__ . '/../app/Auth.php';
 require_once __DIR__ . '/../app/NetSafety.php';
+require_once __DIR__ . '/../app/Resolver.php';
 require_once __DIR__ . '/../app/Sanitizer.php';
 
 $assertions = 0;
@@ -77,6 +79,28 @@ expectSame(
     'https://example.com/path',
     $net->validateUrl('https://EXAMPLE.com./path')['url'],
     'Hostnames are normalized before pinned requests'
+);
+
+$resolver = new Resolver($net);
+expectSame(
+    'https://www.amazon.com/dp/B0HF1CV5X4',
+    $resolver->embeddedDestination('https://redirect.fatcoupon.com/go?referrer=abc&url=https%3A%2F%2Fwww.amazon.com%2Fdp%2FB0HF1CV5X4'),
+    'FatCoupon destination URLs are extracted'
+);
+expectSame(
+    'https://clcktrck.com/US/s/red_u_plain.php?t=direct&s=22243&d=https%3A%2F%2Fwww.amazon.com%2Fdp%2FB0HF1CV5X4',
+    $resolver->embeddedDestination('https://bigoffers.us/redirect.html?store_url=https%3A%2F%2Fclcktrck.com%2FUS%2Fs%2Fred_u_plain.php%3Ft%3Ddirect%26s%3D22243%26d%3Dhttps%253A%252F%252Fwww.amazon.com%252Fdp%252FB0HF1CV5X4'),
+    'BigOffers store URLs are extracted without losing their nested query'
+);
+expectSame(
+    'https://www.amazon.com/dp/B0HF1CV5X4',
+    $resolver->embeddedDestination('https://clcktrck.com/US/s/red_u_plain.php?t=direct&d=https%253A%252F%252Fwww.amazon.com%252Fdp%252FB0HF1CV5X4'),
+    'Doubly encoded click-tracker destinations are extracted'
+);
+expectSame(
+    null,
+    $resolver->embeddedDestination('https://example.com/?url=https%3A%2F%2Fwww.amazon.com%2Fdp%2FB0HF1CV5X4'),
+    'Destination parameters on unknown hosts are not trusted'
 );
 
 echo "All {$assertions} assertions passed.\n";

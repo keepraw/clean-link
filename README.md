@@ -9,6 +9,7 @@ A tiny private PHP tool that follows redirect links and removes affiliate and tr
 ## Features
 
 - Follows up to 10 HTTP `301`, `302`, `303`, `307`, and `308` redirects.
+- Unwraps known client-side affiliate redirectors from FatCoupon, BigOffers, and clcktrck.
 - Shows the original, resolved, and cleaned URLs.
 - Canonicalizes Amazon product links to `/dp/ASIN` when an ASIN is present.
 - Removes common tracking parameters while preserving unknown functional parameters.

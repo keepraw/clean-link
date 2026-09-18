@@ -8,6 +8,14 @@ final class Resolver
 {
     private const REDIRECT_CODES = [301, 302, 303, 307, 308];
 
+    private const EMBEDDED_DESTINATION_PARAMETERS = [
+        'redirect.fatcoupon.com' => 'url',
+        'bigoffers.us' => 'store_url',
+        'www.bigoffers.us' => 'store_url',
+        'clcktrck.com' => 'd',
+        'www.clcktrck.com' => 'd',
+    ];
+
     /** @var NetSafety */
     private $netSafety;
 
@@ -24,6 +32,17 @@ final class Resolver
 
         for ($redirects = 0; ; $redirects++) {
             $target = $this->netSafety->validateUrl($current);
+
+            $embeddedDestination = $this->embeddedDestination($target['url']);
+            if ($embeddedDestination !== null) {
+                $hops[] = ['url' => $target['url'], 'status' => 200];
+                if ($redirects >= $maxRedirects) {
+                    throw new AppError('REDIRECT_LIMIT', 'Redirect limit exceeded.', 508);
+                }
+                $current = $embeddedDestination;
+                continue;
+            }
+
             $address = $this->netSafety->resolvePublicAddress($target['host']);
             $response = $this->requestHeaders($target, $address['address'], $timeoutMs);
             $hops[] = ['url' => $current, 'status' => $response['status']];
@@ -37,6 +56,40 @@ final class Resolver
 
             $current = $this->resolveLocation($current, $response['location']);
         }
+    }
+
+    public function embeddedDestination(string $url): ?string
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || !isset($parts['host'], $parts['query'])) {
+            return null;
+        }
+
+        $host = strtolower(rtrim((string) $parts['host'], '.'));
+        $parameter = self::EMBEDDED_DESTINATION_PARAMETERS[$host] ?? null;
+        if ($parameter === null) {
+            return null;
+        }
+
+        parse_str((string) $parts['query'], $query);
+        $candidate = $query[$parameter] ?? null;
+        if (!is_string($candidate) || $candidate === '') {
+            return null;
+        }
+
+        for ($decodePass = 0; $decodePass < 3; $decodePass++) {
+            if (preg_match('#^https?://#i', $candidate)) {
+                return $candidate;
+            }
+
+            $decoded = rawurldecode($candidate);
+            if ($decoded === $candidate) {
+                break;
+            }
+            $candidate = $decoded;
+        }
+
+        return preg_match('#^https?://#i', $candidate) ? $candidate : null;
     }
 
     /** @param array{scheme: string, host: string, port: int, url: string} $target
