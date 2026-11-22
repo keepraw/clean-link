@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl
+          coverage: none
+      - run: find app public tests -name '*.php' -type f -exec php -l '{}' \;
+      - run: php tests/run.php
+      - run: bash -n install.sh update.sh
+      - run: shellcheck install.sh update.sh

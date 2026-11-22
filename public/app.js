@@ -10,6 +10,7 @@ const cleanButton = document.querySelector("#clean-button");
 const cleanError = document.querySelector("#clean-error");
 const resultPanel = document.querySelector("#result-panel");
 const cleanUrlElement = document.querySelector("#clean-url");
+const resultWarning = document.querySelector("#result-warning");
 const originalUrlElement = document.querySelector("#original-url");
 const finalUrlElement = document.querySelector("#final-url");
 const redirectCount = document.querySelector("#redirect-count");
@@ -77,6 +78,8 @@ async function cleanLink(url) {
     currentCleanUrl = result.cleanUrl;
     cleanUrlElement.textContent = result.cleanUrl;
     cleanUrlElement.href = result.cleanUrl;
+    resultWarning.textContent = result.warning || "";
+    resultWarning.classList.toggle("hidden", !result.warning);
     originalUrlElement.textContent = result.originalUrl;
     finalUrlElement.textContent = result.finalUrl;
     openButton.href = result.cleanUrl;

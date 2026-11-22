@@ -4,14 +4,12 @@ declare(strict_types=1);
 
 use CleanLink\AppError;
 use CleanLink\Auth;
-use CleanLink\LoginRateLimiter;
 use CleanLink\NetSafety;
 use CleanLink\Resolver;
 use CleanLink\Sanitizer;
 
 require_once dirname(__DIR__) . '/app/AppError.php';
 require_once dirname(__DIR__) . '/app/Auth.php';
-require_once dirname(__DIR__) . '/app/LoginRateLimiter.php';
 require_once dirname(__DIR__) . '/app/NetSafety.php';
 require_once dirname(__DIR__) . '/app/Resolver.php';
 require_once dirname(__DIR__) . '/app/Sanitizer.php';
@@ -82,19 +80,6 @@ function requestIsSecure(): bool
         || strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
 }
 
-function clientAddress(): string
-{
-    $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
-    if (in_array($remote, ['127.0.0.1', '::1'], true)) {
-        $forwarded = explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0];
-        $forwarded = trim($forwarded);
-        if (filter_var($forwarded, FILTER_VALIDATE_IP) !== false) {
-            return $forwarded;
-        }
-    }
-    return $remote;
-}
-
 $staticFiles = [
     '/index.html' => ['index.html', 'text/html; charset=utf-8'],
     '/styles.css' => ['styles.css', 'text/css; charset=utf-8'],
@@ -131,40 +116,22 @@ if ($sessionSeconds < 300 || $sessionSeconds > 2592000) {
     jsonResponse(503, ['error' => 'NOT_CONFIGURED', 'message' => 'Application is not configured.']);
 }
 $auth = new Auth($passwordHash, $secret, $sessionSeconds);
-$rateLimitPath = getenv('RATE_LIMIT_FILE') ?: sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'clean-link-login-attempts.json';
-$rateLimiter = new LoginRateLimiter($rateLimitPath, $secret);
 $method = $requestMethod;
 $path = $requestPath;
 
 try {
     if ($method === 'GET' && $path === '/health') {
-        $rateLimitDirectory = dirname($rateLimitPath);
-        if (
-            !is_dir($rateLimitDirectory)
-            || !is_writable($rateLimitDirectory)
-            || (file_exists($rateLimitPath) && !is_writable($rateLimitPath))
-        ) {
-            throw new AppError('NOT_CONFIGURED', 'Application storage is not writable.', 503);
-        }
         jsonResponse(200, ['status' => 'ok']);
     }
     if ($method === 'GET' && $path === '/api/session') {
         jsonResponse(200, ['authenticated' => $auth->isAuthenticated()]);
     }
     if ($method === 'POST' && $path === '/api/login') {
-        $client = clientAddress();
-        $retryAfter = $rateLimiter->retryAfter($client);
-        if ($retryAfter > 0) {
-            header('Retry-After: ' . $retryAfter);
-            throw new AppError('RATE_LIMITED', 'Too many login attempts. Try again later.', 429);
-        }
         $body = jsonBody();
         if (!$auth->passwordMatches($body['password'] ?? null)) {
-            $retryAfter = $rateLimiter->recordFailure($client);
-            if ($retryAfter > 0) header('Retry-After: ' . $retryAfter);
+            sleep(2);
             throw new AppError('INVALID_PASSWORD', 'Incorrect password.', 401);
         }
-        $rateLimiter->clearClient($client);
         $auth->setSessionCookie(requestIsSecure());
         jsonResponse(200, ['authenticated' => true]);
     }
@@ -189,6 +156,7 @@ try {
             'finalUrl' => $resolved['finalUrl'],
             'cleanUrl' => $clean,
             'redirectCount' => max(0, count($resolved['hops']) - 1),
+            'warning' => $resolved['warning'],
         ]);
     }
 
