@@ -33,7 +33,16 @@ curl -fsSL https://raw.githubusercontent.com/keepraw/clean-link/main/install.sh 
   | APP_PASSWORD='random-password-of-at-least-20-characters' APP_PORT=3000 bash
 ```
 
-To use a domain, point its A/AAAA records to the server and allow inbound ports 80 and 443. The installer configures Caddy for HTTPS:
+On a fresh install, if the default or prompted port is busy, the installer selects the next free port within 100 ports. An explicitly set busy `APP_PORT` fails with an error; upgrades keep their existing port.
+
+To use a domain, point its A/AAAA records to the server and allow inbound ports 80 and 443. The installer selects a proxy mode:
+
+- Existing Caddy: adds `/etc/caddy/clean-link.caddy` and imports it from the existing Caddyfile.
+- Active Nginx: adds `/etc/nginx/conf.d/clean-link.conf` and requests a certificate with Certbot.
+- Another server using port 80 or 443: installs for localhost only; add your own proxy to `127.0.0.1:<port>`.
+- No existing proxy: installs Caddy and configures HTTPS.
+
+For example:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/keepraw/clean-link/main/install.sh \
@@ -127,4 +136,4 @@ sudo userdel clean-link
 sudo rm -rf /opt/clean-link
 ```
 
-If the installer added Caddy exclusively for Clean Link, remove it with `sudo apt purge caddy`.
+If Clean Link added a Caddy site, remove `/etc/caddy/clean-link.caddy` and its `import /etc/caddy/clean-link.caddy` line from `/etc/caddy/Caddyfile`, then reload Caddy. If it added an Nginx site, remove `/etc/nginx/conf.d/clean-link.conf` and reload Nginx. Purge Caddy only if it was installed exclusively for Clean Link.
