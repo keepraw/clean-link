@@ -67,6 +67,8 @@ validate_password() {
 write_env() {
     printf "APP_PASSWORD_HASH='%s'\nSESSION_SECRET='%s'\nAPP_PORT=%s\nAPP_DOMAIN='%s'\nSESSION_SECONDS=86400\nCOOKIE_SECURE=auto\n" \
         "$1" "$2" "$3" "$4" | run_root tee "$STAGING_DIR/.env" >/dev/null
+    run_root chown root:"$SERVICE_NAME" "$STAGING_DIR/.env"
+    run_root chmod 0640 "$STAGING_DIR/.env"
 }
 
 prompt_password() {
@@ -214,6 +216,8 @@ run_root bash -o pipefail -c 'curl -fsSL "$1" | tar -xz --strip-components=1 -C 
 
 if [ "$UPGRADE" = true ]; then
     run_root cp "$INSTALL_DIR/.env" "$STAGING_DIR/.env"
+    run_root chown root:"$SERVICE_NAME" "$STAGING_DIR/.env"
+    run_root chmod 0640 "$STAGING_DIR/.env"
     app_port="$(read_setting APP_PORT "$STAGING_DIR/.env")"
     app_port="${app_port:-$DEFAULT_PORT}"
     app_domain="$(read_setting APP_DOMAIN "$STAGING_DIR/.env")"
@@ -316,8 +320,6 @@ fi
 
 run_root chown root:root "$STAGING_DIR"
 run_root chmod 0755 "$STAGING_DIR"
-run_root chown root:"$SERVICE_NAME" "$STAGING_DIR/.env"
-run_root chmod 0640 "$STAGING_DIR/.env"
 run_root chmod 0755 "$STAGING_DIR/install.sh" "$STAGING_DIR/update.sh"
 say "Validating staged application..."
 run_root find "$STAGING_DIR/app" "$STAGING_DIR/public" "$STAGING_DIR/tests" \
