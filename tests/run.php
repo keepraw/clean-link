@@ -279,6 +279,16 @@ $jsResolver = fakeResolver($net, [
 ]);
 expectSame($jsTarget, $jsResolver->resolveWithHttp($jsBase)['finalUrl'], 'Small-page JavaScript redirects are followed');
 
+$onclickTarget = 'https://merchant.example/onclick';
+$onclickRequests = [];
+$onclickResolver = fakeResolver($net, [
+    $jsBase => response(200, null, 'text/html', '<a onclick="location.href=\'https://merchant.example/onclick\'">open</a>'),
+    $onclickTarget => response(),
+], $onclickRequests);
+$onclickResult = $onclickResolver->resolveWithHttp($jsBase);
+expectSame($jsBase, $onclickResult['finalUrl'], 'Inline onclick handlers are not treated as JavaScript redirects');
+expectSame([$jsBase], array_column($onclickRequests, 'url'), 'Inline onclick handlers do not trigger another fetch');
+
 $largeBody = str_repeat('x', 16385) . '<script>location="https://merchant.example/should-not-follow";</script>';
 $largeResolver = fakeResolver($net, [
     $jsBase => response(200, null, 'text/html', $largeBody),

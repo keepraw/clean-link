@@ -321,12 +321,16 @@ final class Resolver
         if (!$bodyComplete || strlen($body) > 16384) {
             return null;
         }
+        $scriptContents = '';
+        if (preg_match_all('#<script\b[^>]*>(.*?)</script\s*>#is', $body, $scripts)) {
+            $scriptContents = implode("\n", $scripts[1]);
+        }
         $patterns = [
             '#(?:window\.|document\.|top\.|self\.)?location(?:\.href)?\s*=\s*["\'](https?:[\\\\]?/[\\\\]?/[^"\']+)#i',
             '#location\.(?:replace|assign)\(\s*["\'](https?:[\\\\]?/[\\\\]?/[^"\']+)#i',
         ];
         foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $body, $match)) {
+            if (preg_match($pattern, $scriptContents, $match)) {
                 $location = str_replace('\\/', '/', $match[1]);
                 $location = preg_replace('/\\\\u0026/i', '&', $location);
                 return $this->resolveLocation($base, $location);
