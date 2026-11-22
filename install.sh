@@ -12,6 +12,17 @@ BACKUP_DIR=""
 UNIT_BACKUP=""
 UNIT_TEMP=""
 CADDY_TEMP=""
+CADDYFILE_BACKUP=""
+CADDYFILE_ORIGINAL=false
+CADDYFILE_CHANGED=false
+CADDY_SITE_CREATED=false
+NGINX_CONFIG_CREATED=false
+NGINX_RELOAD_NEEDED=false
+CADDY_SITE_FILE=/etc/caddy/clean-link.caddy
+NGINX_CONFIG_FILE=/etc/nginx/conf.d/clean-link.conf
+PROXY_MODE=""
+REQUESTED_DOMAIN=""
+SERVICE_USER_CREATED=false
 SWAPPED=false
 FRESH_INSTALL=false
 SUCCESS=false
@@ -53,6 +64,36 @@ validate_port() {
     if [ "$1" -lt 1024 ] || [ "$1" -gt 65535 ]; then
         fail "The listening port must be a number from 1024 to 65535."
     fi
+}
+
+port_in_use() {
+    local listeners
+    listeners="$(run_root ss -ltnH "( sport = :$1 )")" ||
+        fail "Could not inspect listening ports with ss."
+    [ -n "$listeners" ]
+}
+
+select_free_port() {
+    local start candidate last
+    validate_port "$app_port"
+    if ! port_in_use "$app_port"; then
+        return
+    fi
+    if [ "${APP_PORT+x}" = x ]; then
+        fail "Port $app_port is already in use; choose another APP_PORT."
+    fi
+
+    start=$((10#$app_port))
+    last=$((start + 100))
+    [ "$last" -le 65535 ] || last=65535
+    for ((candidate = start + 1; candidate <= last; candidate++)); do
+        if ! port_in_use "$candidate"; then
+            say "Port $start is in use; using $candidate."
+            app_port="$candidate"
+            return
+        fi
+    done
+    fail "No available port found from $start through $last."
 }
 
 validate_password() {
@@ -108,7 +149,218 @@ prompt_domain() {
 }
 
 caddy_config() {
-    printf '%s {\n    reverse_proxy 127.0.0.1:%s\n}\n' "$app_domain" "$app_port"
+    printf '%s {\n    reverse_proxy 127.0.0.1:%s\n}\n' "$REQUESTED_DOMAIN" "$app_port"
+}
+
+ipv6_available() {
+    [ -e /proc/net/if_inet6 ]
+}
+
+nginx_config() {
+    printf 'server {\n    listen 80;\n'
+    if ipv6_available; then
+        printf '    listen [::]:80;\n'
+    fi
+    printf '    server_name %s;\n\n    location / {\n        proxy_pass http://127.0.0.1:%s;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n}\n' \
+        "$REQUESTED_DOMAIN" "$app_port"
+}
+
+nginx_tls_config() {
+    printf 'server {\n    listen 80;\n'
+    if ipv6_available; then
+        printf '    listen [::]:80;\n'
+    fi
+    printf '    server_name %s;\n    return 301 https://$host$request_uri;\n}\n\nserver {\n    listen 443 ssl;\n' \
+        "$REQUESTED_DOMAIN"
+    if ipv6_available; then
+        printf '    listen [::]:443 ssl;\n'
+    fi
+    printf '    server_name %s;\n    ssl_certificate /etc/letsencrypt/live/clean-link/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/clean-link/privkey.pem;\n\n    location / {\n        proxy_pass http://127.0.0.1:%s;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n}\n' \
+        "$REQUESTED_DOMAIN" "$app_port"
+}
+
+write_nginx_config() {
+    local config_type="$1"
+    CADDY_TEMP="$(mktemp)"
+    case "$config_type" in
+        http)
+            nginx_config >"$CADDY_TEMP"
+            ;;
+        tls)
+            nginx_tls_config >"$CADDY_TEMP"
+            ;;
+        *)
+            fail "Unknown Nginx configuration type: $config_type."
+            ;;
+    esac
+    run_root install -o root -g root -m 0644 "$CADDY_TEMP" "$NGINX_CONFIG_FILE"
+    rm -f -- "$CADDY_TEMP"
+    CADDY_TEMP=""
+}
+
+backup_caddyfile() {
+    if run_root test -e /etc/caddy/Caddyfile; then
+        CADDYFILE_BACKUP="$(run_root mktemp)"
+        run_root cp -p /etc/caddy/Caddyfile "$CADDYFILE_BACKUP"
+        CADDYFILE_ORIGINAL=true
+    else
+        CADDYFILE_ORIGINAL=false
+    fi
+}
+
+write_caddy_site() {
+    CADDY_TEMP="$(mktemp)"
+    caddy_config >"$CADDY_TEMP"
+    if run_root test -e "$CADDY_SITE_FILE"; then
+        if ! run_root cmp -s "$CADDY_SITE_FILE" "$CADDY_TEMP"; then
+            fail "Existing $CADDY_SITE_FILE differs; refusing to overwrite it."
+        fi
+    else
+        CADDY_SITE_CREATED=true
+        run_root install -o root -g root -m 0644 "$CADDY_TEMP" "$CADDY_SITE_FILE"
+    fi
+    rm -f -- "$CADDY_TEMP"
+    CADDY_TEMP=""
+}
+
+configure_existing_caddy() {
+    local import_line
+    import_line="import $CADDY_SITE_FILE"
+    write_caddy_site
+
+    if ! run_root test -f /etc/caddy/Caddyfile ||
+        ! run_root grep -Fxq -- "$import_line" /etc/caddy/Caddyfile; then
+        backup_caddyfile
+        CADDYFILE_CHANGED=true
+        if [ "$CADDYFILE_ORIGINAL" = false ]; then
+            run_root install -o root -g root -m 0644 /dev/null /etc/caddy/Caddyfile
+        fi
+        printf '\n%s\n' "$import_line" | run_root tee -a /etc/caddy/Caddyfile >/dev/null
+    fi
+
+    if ! run_root caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+        fail "Existing Caddy configuration is invalid or conflicts; Clean Link was not added."
+    fi
+    if run_root systemctl is-active --quiet caddy; then
+        run_root systemctl reload caddy
+    else
+        run_root systemctl enable --now caddy
+    fi
+}
+
+ensure_caddy_package_source() {
+    local candidate
+    candidate="$(run_root apt-cache policy caddy | sed -n 's/^  Candidate: //p')"
+    if [ -n "$candidate" ] && [ "$candidate" != "(none)" ]; then
+        return
+    fi
+    run_root apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gnupg
+    run_root bash -o pipefail -c \
+        'curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg'
+    run_root bash -c \
+        'curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list'
+    run_root apt-get update
+}
+
+configure_new_caddy() {
+    local import_line
+    import_line="import $CADDY_SITE_FILE"
+    if [ -e /etc/caddy/Caddyfile ] || [ -e "$CADDY_SITE_FILE" ]; then
+        fail "Existing Caddy configuration found; refusing to replace it."
+    fi
+
+    ensure_caddy_package_source
+    run_root apt-get install -y caddy
+    write_caddy_site
+
+    backup_caddyfile
+    CADDYFILE_CHANGED=true
+    CADDY_TEMP="$(mktemp)"
+    printf '%s\n' "$import_line" >"$CADDY_TEMP"
+    run_root install -o root -g root -m 0644 "$CADDY_TEMP" /etc/caddy/Caddyfile
+    rm -f -- "$CADDY_TEMP"
+    CADDY_TEMP=""
+
+    if ! run_root caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+        fail "Could not validate the new Caddy configuration; Clean Link was not added."
+    fi
+    run_root systemctl enable caddy
+    run_root systemctl restart caddy
+}
+
+configure_nginx() {
+    if run_root test -e "$NGINX_CONFIG_FILE"; then
+        fail "Existing $NGINX_CONFIG_FILE found; refusing to overwrite it."
+    fi
+    NGINX_CONFIG_CREATED=true
+    write_nginx_config http
+
+    if ! run_root nginx -t; then
+        fail "Existing Nginx configuration is invalid; Clean Link was not added."
+    fi
+    NGINX_RELOAD_NEEDED=true
+    run_root systemctl reload nginx
+
+    if ! run_root certbot plugins 2>/dev/null | grep -q nginx; then
+        run_root apt-get install -y certbot python3-certbot-nginx
+    fi
+    if ! run_root certbot certonly --nginx --cert-name clean-link \
+        -d "$REQUESTED_DOMAIN" --non-interactive --agree-tos \
+        --register-unsafely-without-email --deploy-hook 'systemctl reload nginx'; then
+        run_root rm -f -- "$NGINX_CONFIG_FILE"
+        NGINX_CONFIG_CREATED=false
+        run_root systemctl reload nginx || true
+        NGINX_RELOAD_NEEDED=false
+        fail "Could not obtain an HTTPS certificate for $REQUESTED_DOMAIN; check DNS and ports 80/443."
+    fi
+
+    write_nginx_config tls
+    if ! run_root nginx -t; then
+        fail "Could not validate Clean Link's HTTPS Nginx configuration; Clean Link was not added."
+    fi
+    run_root systemctl reload nginx
+}
+
+configure_domain_proxy() {
+    case "$PROXY_MODE" in
+        caddy)
+            configure_existing_caddy
+            ;;
+        nginx)
+            configure_nginx
+            ;;
+        new-caddy)
+            configure_new_caddy
+            ;;
+        other|"")
+            ;;
+        *)
+            fail "Unknown proxy mode: $PROXY_MODE"
+            ;;
+    esac
+}
+
+rollback_proxy() {
+    if [ "$CADDYFILE_CHANGED" = true ]; then
+        if [ "$CADDYFILE_ORIGINAL" = true ]; then
+            run_root cp -p "$CADDYFILE_BACKUP" /etc/caddy/Caddyfile || true
+        else
+            run_root rm -f -- /etc/caddy/Caddyfile || true
+        fi
+        CADDYFILE_CHANGED=false
+    fi
+    if [ "$CADDY_SITE_CREATED" = true ]; then
+        run_root rm -f -- "$CADDY_SITE_FILE" || true
+        CADDY_SITE_CREATED=false
+    fi
+    if [ "$NGINX_CONFIG_CREATED" = true ]; then
+        run_root rm -f -- "$NGINX_CONFIG_FILE" || true
+        NGINX_CONFIG_CREATED=false
+    fi
+    if [ "$NGINX_RELOAD_NEEDED" = true ]; then
+        run_root systemctl reload nginx >/dev/null 2>&1 || true
+        NGINX_RELOAD_NEEDED=false
+    fi
 }
 
 health_check() {
@@ -126,6 +378,9 @@ health_check() {
 }
 
 rollback() {
+    if [ "$FRESH_INSTALL" = true ]; then
+        rollback_proxy
+    fi
     if [ "$SWAPPED" = true ] && [ -d "$BACKUP_DIR" ]; then
         say "Update failed; restoring the previous installation." >&2
         run_root systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
@@ -139,6 +394,10 @@ rollback() {
         run_root rm -f -- "$SERVICE_FILE" || true
         run_root rm -rf -- "$INSTALL_DIR" || true
         run_root systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    if [ "$SERVICE_USER_CREATED" = true ] && [ "$UPGRADE" = false ]; then
+        run_root userdel "$SERVICE_NAME" >/dev/null 2>&1 || true
+        SERVICE_USER_CREATED=false
     fi
 }
 
@@ -159,6 +418,9 @@ cleanup() {
     fi
     if [ -n "$CADDY_TEMP" ] && [ -f "$CADDY_TEMP" ]; then
         rm -f -- "$CADDY_TEMP"
+    fi
+    if [ -n "$CADDYFILE_BACKUP" ]; then
+        run_root rm -f -- "$CADDYFILE_BACKUP" || true
     fi
     if [ "$SUCCESS" = true ] && [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
         run_root rm -rf -- "$BACKUP_DIR" || true
@@ -212,6 +474,7 @@ command -v tar >/dev/null 2>&1 || fail "tar is required."
 
 if ! id -u "$SERVICE_NAME" >/dev/null 2>&1; then
     run_root useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE_NAME"
+    SERVICE_USER_CREATED=true
 fi
 run_root install -d -m 0755 /opt
 STAGING_DIR="$(run_root mktemp -d "${INSTALL_DIR}.new.XXXXXX")"
@@ -281,6 +544,7 @@ else
         ')"
     unset app_password APP_PASSWORD
     prompt_port
+    select_free_port
     prompt_domain
     if [ -n "$app_domain" ]; then
         if [ "${#app_domain}" -gt 253 ] ||
@@ -314,10 +578,19 @@ else
                     ;;
             esac
         fi
+        REQUESTED_DOMAIN="$app_domain"
         if command -v caddy >/dev/null 2>&1; then
-            if [ ! -f /etc/caddy/Caddyfile ] ||
-                ! cmp -s /etc/caddy/Caddyfile <(caddy_config); then
-                fail "Caddy is already installed; configure the existing proxy manually."
+            PROXY_MODE=caddy
+        elif run_root systemctl is-active --quiet nginx; then
+            PROXY_MODE=nginx
+        else
+            listeners="$(run_root ss -ltnH '( sport = :80 or sport = :443 )')" ||
+                fail "Could not inspect listening ports with ss."
+            if [ -n "$listeners" ]; then
+                PROXY_MODE=other
+                app_domain=""
+            else
+                PROXY_MODE=new-caddy
             fi
         fi
     fi
@@ -385,15 +658,8 @@ if ! run_root systemctl restart "$SERVICE_NAME" 2>/dev/null; then
 fi
 health_check "$app_port" || fail "Clean Link failed its /health check."
 
-if [ "$UPGRADE" = false ] && [ -n "$app_domain" ]; then
-    run_root apt-get install -y caddy
-    CADDY_TEMP="$(mktemp)"
-    caddy_config >"$CADDY_TEMP"
-    run_root install -o root -g root -m 0644 "$CADDY_TEMP" /etc/caddy/Caddyfile
-    rm -f -- "$CADDY_TEMP"
-    CADDY_TEMP=""
-    run_root systemctl enable caddy
-    run_root systemctl restart caddy
+if [ "$UPGRADE" = false ] && [ -n "$REQUESTED_DOMAIN" ]; then
+    configure_domain_proxy
 fi
 if [ "$UPGRADE" = true ]; then
     run_root rm -rf -- /var/lib/clean-link
@@ -403,7 +669,9 @@ SUCCESS=true
 FRESH_INSTALL=false
 SWAPPED=false
 say "Clean Link installed or upgraded successfully."
-if [ -n "$app_domain" ]; then
+if [ "$PROXY_MODE" = other ]; then
+    say "Ports 80/443 are used by another web server; Clean Link is running on 127.0.0.1:$app_port. Add a reverse proxy for $REQUESTED_DOMAIN to that address in your web server."
+elif [ -n "$app_domain" ]; then
     say "URL: https://${app_domain}"
 else
     say "URL: http://127.0.0.1:${app_port} (localhost only)"
