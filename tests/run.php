@@ -327,6 +327,10 @@ $timeoutResult = $timeoutResolver->resolveWithHttp($timeoutTracker);
 expectSame($timeoutMerchant, $timeoutResult['finalUrl'], 'Merchant timeout retains the best known destination');
 expectSame('Stopped early: request timed out.', $timeoutResult['warning'], 'Merchant timeout reports a warning');
 expectSame(4000, $timeoutRequests[0]['timeout'], 'Requests after a static unwrap use the shorter timeout');
+expectSame([
+    ['url' => $timeoutTracker, 'status' => 200],
+    ['url' => $timeoutMerchant, 'status' => 0],
+], $timeoutResult['hops'], 'Merchant timeout records the failed fetch as a zero-status hop');
 
 $firstTimeout = 'https://tracker.example/slow';
 $firstTimeoutResult = fakeResolver($net, [
@@ -334,6 +338,9 @@ $firstTimeoutResult = fakeResolver($net, [
 ])->resolveWithHttp($firstTimeout);
 expectSame($firstTimeout, $firstTimeoutResult['finalUrl'], 'Initial timeout returns the cleaned input URL');
 expectSame('Stopped early: request timed out.', $firstTimeoutResult['warning'], 'Initial timeout reports a warning');
+expectSame([
+    ['url' => $firstTimeout, 'status' => 0],
+], $firstTimeoutResult['hops'], 'Initial timeout records the failed fetch as a zero-status hop');
 expectThrows(function () use ($net, $firstTimeout): void {
     fakeResolver($net, [
         $firstTimeout => new AppError('UNSAFE_ADDRESS', 'Blocked unsafe address.', 400),

@@ -80,6 +80,7 @@ final class Resolver
                 if ($hops === [] && $error->errorCode === 'UNSAFE_ADDRESS') {
                     throw $error;
                 }
+                $hops[] = ['url' => $current, 'status' => 0];
                 $message = $error->errorCode === 'REQUEST_TIMEOUT'
                     ? 'Stopped early: request timed out.'
                     : 'Stopped early: unable to resolve link.';
