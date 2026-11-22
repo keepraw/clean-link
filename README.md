@@ -38,7 +38,7 @@ On a fresh install, if the default or prompted port is busy, the installer selec
 To use a domain, point its A/AAAA records to the server and allow inbound ports 80 and 443. The installer selects a proxy mode:
 
 - Existing Caddy: adds `/etc/caddy/clean-link.caddy` and imports it from the existing Caddyfile.
-- Active Nginx: adds `/etc/nginx/conf.d/clean-link.conf` and requests a certificate with Certbot.
+- Active Nginx: adds `/etc/nginx/conf.d/clean-link.conf` and obtains a dedicated `clean-link` certificate with `certbot certonly --nginx`; the Certbot timer renews it and reloads Nginx.
 - Another server using port 80 or 443: installs for localhost only; add your own proxy to `127.0.0.1:<port>`.
 - No existing proxy: installs Caddy and configures HTTPS.
 
@@ -136,4 +136,4 @@ sudo userdel clean-link
 sudo rm -rf /opt/clean-link
 ```
 
-If Clean Link added a Caddy site, remove `/etc/caddy/clean-link.caddy` and its `import /etc/caddy/clean-link.caddy` line from `/etc/caddy/Caddyfile`, then reload Caddy. If it added an Nginx site, remove `/etc/nginx/conf.d/clean-link.conf` and reload Nginx. Purge Caddy only if it was installed exclusively for Clean Link.
+If Clean Link added a Caddy site, remove `/etc/caddy/clean-link.caddy` and its `import /etc/caddy/clean-link.caddy` line from `/etc/caddy/Caddyfile`, then reload Caddy. If it added an Nginx site, remove `/etc/nginx/conf.d/clean-link.conf`, reload Nginx, and run `sudo certbot delete --cert-name clean-link`. Purge Caddy only if it was installed exclusively for Clean Link.
