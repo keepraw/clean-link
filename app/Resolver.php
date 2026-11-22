@@ -154,7 +154,14 @@ final class Resolver
 
         $outerHost = $this->normalizedHost($host);
         if (isset($parts['path']) && preg_match('#(?:^|/)destination:(.+)$#i', (string) $parts['path'], $match)) {
-            $candidate = $this->decodeDestination($match[1]);
+            $rawCandidate = $match[1];
+            if (isset($parts['query'])) {
+                $rawCandidate .= '?' . $parts['query'];
+            }
+            if (isset($parts['fragment'])) {
+                $rawCandidate .= '#' . $parts['fragment'];
+            }
+            $candidate = $this->decodeDestination($rawCandidate);
             if ($candidate !== null && $this->hasDifferentHost($candidate, $outerHost)) {
                 return $candidate;
             }

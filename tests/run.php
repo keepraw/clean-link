@@ -171,6 +171,17 @@ foreach ([
 ] as $test) {
     expectSame($merchant, $resolver->embeddedDestination($test[0]), $test[1]);
 }
+$partnerizeRawDestination = 'https://www.example.com/p?id=1&v=2#offer';
+expectSame(
+    $partnerizeRawDestination,
+    $resolver->embeddedDestination('https://prf.hn/click/camref:1/destination:' . $partnerizeRawDestination),
+    'Partnerize path destinations preserve raw queries and fragments'
+);
+expectSame(
+    $partnerizeRawDestination,
+    $resolver->embeddedDestination('https://prf.hn/click/camref:1/destination:' . rawurlencode($partnerizeRawDestination)),
+    'Partnerize path destinations decode encoded URLs'
+);
 expectSame(
     null,
     $resolver->embeddedDestination('https://example.com/login?next=https%3A%2F%2Fexample.com%2Fx'),
