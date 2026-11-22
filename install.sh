@@ -311,7 +311,10 @@ else
             esac
         fi
         if command -v caddy >/dev/null 2>&1; then
-            fail "Caddy is already installed; configure the existing proxy manually."
+            if [ ! -f /etc/caddy/Caddyfile ] ||
+                ! grep -Fxq -- "${app_domain} {" /etc/caddy/Caddyfile; then
+                fail "Caddy is already installed; configure the existing proxy manually."
+            fi
         fi
     fi
     session_secret="$("$php_bin" -r 'echo bin2hex(random_bytes(32));')"
