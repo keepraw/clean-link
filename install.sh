@@ -107,6 +107,10 @@ prompt_domain() {
     app_domain="${app_domain,,}"
 }
 
+caddy_config() {
+    printf '%s {\n    reverse_proxy 127.0.0.1:%s\n}\n' "$app_domain" "$app_port"
+}
+
 health_check() {
     local attempt
     for ((attempt = 0; attempt < 30; attempt++)); do
@@ -312,7 +316,7 @@ else
         fi
         if command -v caddy >/dev/null 2>&1; then
             if [ ! -f /etc/caddy/Caddyfile ] ||
-                ! grep -Fxq -- "${app_domain} {" /etc/caddy/Caddyfile; then
+                ! cmp -s /etc/caddy/Caddyfile <(caddy_config); then
                 fail "Caddy is already installed; configure the existing proxy manually."
             fi
         fi
@@ -384,7 +388,7 @@ health_check "$app_port" || fail "Clean Link failed its /health check."
 if [ "$UPGRADE" = false ] && [ -n "$app_domain" ]; then
     run_root apt-get install -y caddy
     CADDY_TEMP="$(mktemp)"
-    printf '%s {\n    reverse_proxy 127.0.0.1:%s\n}\n' "$app_domain" "$app_port" >"$CADDY_TEMP"
+    caddy_config >"$CADDY_TEMP"
     run_root install -o root -g root -m 0644 "$CADDY_TEMP" /etc/caddy/Caddyfile
     rm -f -- "$CADDY_TEMP"
     CADDY_TEMP=""
