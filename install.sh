@@ -152,9 +152,50 @@ caddy_config() {
     printf '%s {\n    reverse_proxy 127.0.0.1:%s\n}\n' "$REQUESTED_DOMAIN" "$app_port"
 }
 
+ipv6_available() {
+    [ -e /proc/net/if_inet6 ]
+}
+
 nginx_config() {
-    printf 'server {\n    listen 80;\n    server_name %s;\n\n    location / {\n        proxy_pass http://127.0.0.1:%s;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n}\n' \
+    printf 'server {\n    listen 80;\n'
+    if ipv6_available; then
+        printf '    listen [::]:80;\n'
+    fi
+    printf '    server_name %s;\n\n    location / {\n        proxy_pass http://127.0.0.1:%s;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n}\n' \
         "$REQUESTED_DOMAIN" "$app_port"
+}
+
+nginx_tls_config() {
+    printf 'server {\n    listen 80;\n'
+    if ipv6_available; then
+        printf '    listen [::]:80;\n'
+    fi
+    printf '    server_name %s;\n    return 301 https://$host$request_uri;\n}\n\nserver {\n    listen 443 ssl;\n' \
+        "$REQUESTED_DOMAIN"
+    if ipv6_available; then
+        printf '    listen [::]:443 ssl;\n'
+    fi
+    printf '    server_name %s;\n    ssl_certificate /etc/letsencrypt/live/clean-link/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/clean-link/privkey.pem;\n\n    location / {\n        proxy_pass http://127.0.0.1:%s;\n        proxy_set_header Host $host;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n}\n' \
+        "$REQUESTED_DOMAIN" "$app_port"
+}
+
+write_nginx_config() {
+    local config_type="$1"
+    CADDY_TEMP="$(mktemp)"
+    case "$config_type" in
+        http)
+            nginx_config >"$CADDY_TEMP"
+            ;;
+        tls)
+            nginx_tls_config >"$CADDY_TEMP"
+            ;;
+        *)
+            fail "Unknown Nginx configuration type: $config_type."
+            ;;
+    esac
+    run_root install -o root -g root -m 0644 "$CADDY_TEMP" "$NGINX_CONFIG_FILE"
+    rm -f -- "$CADDY_TEMP"
+    CADDY_TEMP=""
 }
 
 backup_caddyfile() {
@@ -248,15 +289,11 @@ configure_new_caddy() {
 }
 
 configure_nginx() {
-    CADDY_TEMP="$(mktemp)"
-    nginx_config >"$CADDY_TEMP"
     if run_root test -e "$NGINX_CONFIG_FILE"; then
         fail "Existing $NGINX_CONFIG_FILE found; refusing to overwrite it."
     fi
     NGINX_CONFIG_CREATED=true
-    run_root install -o root -g root -m 0644 "$CADDY_TEMP" "$NGINX_CONFIG_FILE"
-    rm -f -- "$CADDY_TEMP"
-    CADDY_TEMP=""
+    write_nginx_config http
 
     if ! run_root nginx -t; then
         fail "Existing Nginx configuration is invalid; Clean Link was not added."
@@ -264,17 +301,24 @@ configure_nginx() {
     NGINX_RELOAD_NEEDED=true
     run_root systemctl reload nginx
 
-    if ! command -v certbot >/dev/null 2>&1; then
+    if ! run_root certbot plugins 2>/dev/null | grep -q nginx; then
         run_root apt-get install -y certbot python3-certbot-nginx
     fi
-    if ! run_root certbot --nginx -d "$REQUESTED_DOMAIN" --non-interactive \
-        --agree-tos --register-unsafely-without-email --redirect; then
+    if ! run_root certbot certonly --nginx --cert-name clean-link \
+        -d "$REQUESTED_DOMAIN" --non-interactive --agree-tos \
+        --register-unsafely-without-email --deploy-hook 'systemctl reload nginx'; then
         run_root rm -f -- "$NGINX_CONFIG_FILE"
         NGINX_CONFIG_CREATED=false
         run_root systemctl reload nginx || true
         NGINX_RELOAD_NEEDED=false
         fail "Could not obtain an HTTPS certificate for $REQUESTED_DOMAIN; check DNS and ports 80/443."
     fi
+
+    write_nginx_config tls
+    if ! run_root nginx -t; then
+        fail "Could not validate Clean Link's HTTPS Nginx configuration; Clean Link was not added."
+    fi
+    run_root systemctl reload nginx
 }
 
 configure_domain_proxy() {
