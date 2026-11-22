@@ -41,6 +41,9 @@ final class NetSafety
         if (isset($parts['user']) || isset($parts['pass'])) {
             throw new AppError('UNSAFE_ADDRESS', 'URLs containing credentials are not allowed.');
         }
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false && !$this->isPublicIp($host)) {
+            throw new AppError('UNSAFE_ADDRESS', 'Blocked unsafe address.');
+        }
 
         $port = isset($parts['port']) ? (int) $parts['port'] : ($scheme === 'https' ? 443 : 80);
         if ($port < 1 || $port > 65535) {
@@ -98,10 +101,64 @@ final class NetSafety
 
     public function isPublicIp(string $address): bool
     {
-        return filter_var(
+        $packed = inet_pton($address);
+        if ($packed === false) {
+            return false;
+        }
+
+        if (strlen($packed) === 16) {
+            $mappedPrefix = str_repeat("\0", 10) . "\xff\xff";
+            if (substr($packed, 0, 12) === $mappedPrefix) {
+                return $this->isPublicIp(inet_ntop(substr($packed, 12)));
+            }
+        }
+
+        if (filter_var(
             $address,
             FILTER_VALIDATE_IP,
             FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
-        ) !== false;
+        ) === false) {
+            return false;
+        }
+
+        if (strlen($packed) === 16) {
+            foreach ([
+                ['64:ff9b::', 96],
+                ['2002::', 16],
+                ['ff00::', 8],
+            ] as $range) {
+                if ($this->isInCidr($packed, inet_pton($range[0]), $range[1])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        foreach ([
+            ['100.64.0.0', 10],
+            ['192.0.0.0', 24],
+            ['198.18.0.0', 15],
+            ['224.0.0.0', 4],
+        ] as $range) {
+            if ($this->isInCidr($packed, inet_pton($range[0]), $range[1])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function isInCidr(string $address, string $network, int $prefixLength): bool
+    {
+        $fullBytes = intdiv($prefixLength, 8);
+        $remainingBits = $prefixLength % 8;
+        if (substr($address, 0, $fullBytes) !== substr($network, 0, $fullBytes)) {
+            return false;
+        }
+        if ($remainingBits === 0) {
+            return true;
+        }
+
+        $mask = (0xff << (8 - $remainingBits)) & 0xff;
+        return (ord($address[$fullBytes]) & $mask) === (ord($network[$fullBytes]) & $mask);
     }
 }

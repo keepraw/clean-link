@@ -11,6 +11,11 @@ final class Sanitizer
         'ref', 'ref_', 'tag', 'ascsubtag', 'linkcode', 'camp', 'creative',
         'creativeasin', 'adid', 'aff_id', 'affiliate', 'affiliate_id', 'clickid',
         'irclickid', 'irgwc', 'mc_cid', 'mc_eid', 'mkt_tok', 'vero_id', '_hsenc', '_hsmi',
+        'irpid', 'sharedid', 'awc', 'sscid', 'cjevent', 'cjdata', 'ranmid', 'raneaid',
+        'ransiteid', 'wmlspartner', 'veh', 'sourceid', 'affiliates_ad_id', 'campaign_id',
+        'afid', 'clkid', 'cpng', 'lnm', 'gbraid', 'wbraid', 'ttclid', 'yclid',
+        'li_fat_id', 'epik', 'rdt_cid', '_branch_match_id', 's_kwcid', 'ef_id',
+        'affid', 'aff_sub', 'subid', 'sub_id', 'click_id',
     ];
 
     private const AMAZON_SUFFIXES = [
@@ -49,7 +54,10 @@ final class Sanitizer
     public function isTrackingParameter(string $name): bool
     {
         $normalized = strtolower($name);
-        return strpos($normalized, 'utm_') === 0 || in_array($normalized, self::TRACKING_PARAMETERS, true);
+        return strpos($normalized, 'utm_') === 0
+            || strpos($normalized, 'mtm_') === 0
+            || strpos($normalized, 'pk_') === 0
+            || in_array($normalized, self::TRACKING_PARAMETERS, true);
     }
 
     private function amazonSuffix(string $hostname): ?string
